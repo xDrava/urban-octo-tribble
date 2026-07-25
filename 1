@@ -1,0 +1,497 @@
+--[[
+    Delta Mobile Executor & LinoriaLib v1 Based
+    Rage Bot & Movement & Knife Farm Controller
+]]
+
+-- ✅ 라이브러리 로드 에러 방지 (완벽한 구문 검증)
+local repo = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
+local Library, ThemeManager, SaveManager
+
+local success, err = pcall(function()
+    Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+    ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+    SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))() -- ✅ 잘못된 괄호 수정
+end)
+
+if not success or not Library then
+    warn("❌ [Delta Rage Bot] LinoriaLib 로드 실패! 인터넷 연결 또는 URL을 확인하세요.")
+    warn("오류 내용: " .. tostring(err))
+    return -- 스크립트 진행을 안전하게 중단
+end
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+local Window = Library:CreateWindow({
+    Title = "Delta Rage Bot",
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8
+})
+
+local Tabs = {
+    전술 = Window:AddTab("전술"),
+    움직임 = Window:AddTab("움직임"),
+    ["UI Settings"] = Window:AddTab("UI Settings"),
+}
+
+-- ==============================
+-- [ 전술 탭 UI 구성 ]
+-- ==============================
+
+local MainRageGroup = Tabs.전술:AddLeftGroupbox("메인 레이지")
+MainRageGroup:AddToggle("RageBot", { Text = "레이지 봇", Default = false })
+MainRageGroup:AddDropdown("TargetMode", { 
+    Text = "타겟 선택 방식", 
+    Default = 1, 
+    Values = {"가장 가까운", "체력 최소"}, 
+    Multi = false 
+})
+MainRageGroup:AddSlider("ShootSpeed", {
+    Text = "사격 속도 (초)",
+    Default = 0.05, Min = 0.01, Max = 0.2, Rounding = 2, Compact = false
+})
+
+local WeaponGroup = Tabs.전술:AddRightGroupbox("무기 관리")
+WeaponGroup:AddToggle("AutoWeapon", { Text = "자동 무기 관리", Default = true })
+WeaponGroup:AddToggle("WeaponScan", { Text = "무기 스캔", Default = true })
+WeaponGroup:AddToggle("DangerAvoid", { Text = "위험 무기 회피 (총 모드)", Default = true })
+
+local PhysGroup = Tabs.전술:AddLeftGroupbox("물리 / 동기화")
+PhysGroup:AddToggle("Noclip", { Text = "노클립", Default = false })
+PhysGroup:AddToggle("AntiAim", { Text = "안티 에임 (몸 꼬기)", Default = false })
+PhysGroup:AddToggle("Csync", { Text = "Csync / Desync (핵심)", Default = false, Tooltip = "이 기능이 켜져야 이동 조작이 안전하게 작동합니다" })
+
+local FarmGroup = Tabs.전술:AddRightGroupbox("칼 팜 (Knife Farm)")
+FarmGroup:AddToggle("KnifeFarm", { 
+    Text = "칼 팜 (Katana Farm)", 
+    Default = false, 
+    Tooltip = "상대 무기 상관없이 거리 무제한으로 뒤로 붙음.\n내 화면은 멀쩡, 서버는 뒤로 이동." 
+})
+FarmGroup:AddSlider("FarmDist", {
+    Text = "타겟 뒤 붙는 거리",
+    Default = 2, Min = 0.5, Max = 5, Rounding = 1, Compact = false
+})
+
+-- ==============================
+-- [ 움직임 탭 UI 구성 ]
+-- ==============================
+
+local VoidGroup = Tabs.움직임:AddLeftGroupbox("보이드 (Void)")
+VoidGroup:AddToggle("VoidMode", { Text = "보이드 모드", Default = false, Tooltip = "켜지면 다른 이동 모드 무시" })
+
+local VoidHideTime = VoidGroup:AddSlider("VoidHideTime", {
+    Text = "공허에 숨는 시간", Default = 0.1, Min = 0.05, Max = 0.5, Rounding = 2, Compact = false
+})
+local VoidShootTime = VoidGroup:AddSlider("VoidShootTime", {
+    Text = "공허 발사 시간", Default = 0.05, Min = 0.01, Max = 0.2, Rounding = 2, Compact = false
+})
+VoidHideTime:SetVisible(false)
+VoidShootTime:SetVisible(false)
+
+
+local MoveGroup = Tabs.움직임:AddRightGroupbox("이동 모드 / 지하")
+MoveGroup:AddDropdown("MoveMode", {
+    Text = "이동 모드 (Teleport)",
+    Default = 1, Values = {"앞(Front)", "뒤(Back)", "왼(Left)", "오른(Right)", "위(Up)"}, Multi = false
+})
+MoveGroup:AddToggle("Underground", { Text = "지하 (Underground)", Default = false, Tooltip = "켜지면 이동 모드 무시" })
+
+local UndergroundDepth = MoveGroup:AddSlider("UndergroundDepth", {
+    Text = "숨는 깊이", Default = 6, Min = 3, Max = 15, Rounding = 1, Compact = false
+})
+UndergroundDepth:SetVisible(false)
+
+
+local OrbitGroup = Tabs.움직임:AddLeftGroupbox("공전 (Orbit)")
+OrbitGroup:AddToggle("OrbitMode", { Text = "공전 모드", Default = false })
+
+local OrbitDist = OrbitGroup:AddSlider("OrbitDist", {
+    Text = "상대와의 거리", Default = 3, Min = 0, Max = 10, Rounding = 1, Compact = false
+})
+local OrbitSpeed = OrbitGroup:AddSlider("OrbitSpeed", {
+    Text = "공전 속도", Default = 10, Min = 10, Max = 50, Rounding = 0, Compact = false
+})
+OrbitDist:SetVisible(false)
+OrbitSpeed:SetVisible(false)
+
+
+-- ==============================
+-- [ 로직 엔진 ]
+-- ==============================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+local VIM = game:GetService("VirtualInputManager")
+local WS = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+local Cam = WS.CurrentCamera
+
+local _s = {
+    noclipConn = nil, csyncConn = nil, csyncHbConn = nil,
+    csyncCF = nil, csyncLV = nil, csyncAV = nil,
+    csyncLocalCF = nil, csyncLocalLV = nil, csyncLocalAV = nil,
+    rbActive = false, rbTarget = nil, rbConn = nil,
+    rbVoidHbConn = nil, rbVoidThread = nil, rbVoidTargetCF = nil,
+    voidSavedCF = nil, voidSavedLV = nil, voidSavedAV = nil,
+    rbLastFakePos = nil, orbitAngle = math.random() * (math.pi * 2),
+    aaPhase = 0
+}
+
+local PARTS = { "Head", "Torso", "UpperTorso", "HumanoidRootPart" }
+local _losParams = RaycastParams.new()
+_losParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local _RND_LO, _RND_HI, _RND_DLO, _RND_DHI = -2147483646, 2147483646, -1147483646, 1147483646
+local function _rand(mi, ma, dmi, dma)
+    local r = math.random(mi, ma)
+    while r >= dmi and r <= dma do r = math.random(mi, ma) end
+    return r
+end
+local function _fakev()
+    return Vector3.new(_rand(_RND_LO, _RND_HI, _RND_DLO, _RND_DHI), _rand(_RND_LO, _RND_HI, _RND_DLO, _RND_DHI), _rand(_RND_LO, _RND_HI, _RND_DLO, _RND_DHI))
+end
+local function _voidBR()
+    local n = math.random(_RND_LO, _RND_HI)
+    while n >= _RND_DLO and n <= _RND_DHI do n = math.random(_RND_LO, _RND_HI) end
+    return n
+end
+
+local function IsTeam(p)
+    local c = p.Character; if not c then return false end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    return hrp ~= nil and hrp:FindFirstChild("TeammateLabel") ~= nil
+end
+
+local function PlayerIsDead(p)
+    if not p then return true end
+    local c = p.Character; if not c then return true end
+    local h = c:FindFirstChild("Humanoid")
+    return not h or h.Health <= 0 or not c:FindFirstChild("HumanoidRootPart")
+end
+
+local function ShouldSkip(p)
+    if p == LP then return true end
+    local c = p.Character; if not c then return true end
+    local h = c:FindFirstChild("Humanoid")
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    if not h or h.Health <= 0 or not hrp then return true end
+    if IsTeam(p) then return true end
+    
+    if not Toggles.KnifeFarm.Value and Toggles.DangerAvoid.Value then
+        local vms = WS:FindFirstChild("ViewModels")
+        if vms then
+            for _, m in vms:GetChildren() do
+                if m:IsA("Model") then
+                    local s  = m.Name
+                    local sp = s:find(" - ", 1, true)
+                    if sp and s:sub(1, sp - 1) == p.Name then
+                        local w = s:sub(sp + 3):lower()
+                        if w:find("katana") or w:find("riot") or w:find("shield") then return true end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function RB_GetBestTarget()
+    local lc = LP.Character; local lhrp = lc and lc:FindFirstChild("HumanoidRootPart")
+    if not lhrp then return nil end
+    local best, bestV = nil, math.huge
+    local useHP = Options.TargetMode.Value == "체력 최소"
+    for _, p in Players:GetPlayers() do
+        if ShouldSkip(p) then continue end
+        local c = p.Character; local hrp = c:FindFirstChild("HumanoidRootPart")
+        local hum = c:FindFirstChild("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then continue end
+        local val = useHP and hum.Health or (hrp.Position - lhrp.Position).Magnitude
+        if val < bestV then bestV = val; best = p end
+    end
+    return best
+end
+
+local function RB_PressKey(kc)
+    VIM:SendKeyEvent(true, kc, false, game); task.wait(0.03); VIM:SendKeyEvent(false, kc, false, game)
+end
+
+local function RB_DoFire(thead)
+    local f = LP.Character and LP.Character:FindFirstChild("FighterCtrl")
+    if f and f.UseItem then pcall(function() f:UseItem() end) end
+    pcall(function()
+        if RS.Remotes and RS.Remotes.Replication and RS.Remotes.Replication.Fighter and RS.Remotes.Replication.Fighter.UseItem then
+            RS.Remotes.Replication.Fighter.UseItem:FireServer()
+        end
+    end)
+end
+
+local function EnableNoclip()
+    if _s.noclipConn then return end
+    _s.noclipConn = RunService.Stepped:Connect(function()
+        local lc = LP.Character; if not lc then return end
+        for _, p in lc:GetDescendants() do if p:IsA("BasePart") then p.CanCollide = false end end
+    end)
+end
+
+local function DisableNoclip()
+    if _s.noclipConn then _s.noclipConn:Disconnect(); _s.noclipConn = nil end
+    local lc = LP.Character
+    if lc then for _, p in lc:GetDescendants() do if p:IsA("BasePart") then p.CanCollide = true end end end
+end
+
+local function StopCsync()
+    RunService:UnbindFromRenderStep("sh_csync")
+    if _s.csyncConn then _s.csyncConn:Disconnect(); _s.csyncConn = nil end
+    if _s.csyncHbConn then _s.csyncHbConn:Disconnect(); _s.csyncHbConn = nil end
+    _s.csyncCF = nil; _s.csyncLocalCF = nil
+end
+
+local function StartCsync()
+    StopCsync()
+    _s.csyncHbConn = RunService.Heartbeat:Connect(function()
+        local c = LP.Character; local h = c and c:FindFirstChild("HumanoidRootPart")
+        if not h then return end
+        _s.csyncLocalCF = h.CFrame
+        _s.csyncLocalLV = h.AssemblyLinearVelocity
+        _s.csyncLocalAV = h.AssemblyAngularVelocity
+        if _s.csyncCF then
+            h.CFrame = _s.csyncCF
+            h.AssemblyLinearVelocity = _s.csyncLV or _fakev()
+            h.AssemblyAngularVelocity = _s.csyncAV or _fakev()
+        end
+    end)
+    RunService:BindToRenderStep("sh_csync", Enum.RenderPriority.First.Value, function()
+        local c = LP.Character; local h = c and c:FindFirstChild("HumanoidRootPart")
+        if not h or not _s.csyncLocalCF then return end
+        h.CFrame = _s.csyncLocalCF
+        h.AssemblyLinearVelocity = _s.csyncLocalLV or Vector3.zero
+        h.AssemblyAngularVelocity = _s.csyncLocalAV or Vector3.zero
+    end)
+end
+
+local function DisableVoidCsync()
+    if _s.rbVoidHbConn then _s.rbVoidHbConn:Disconnect(); _s.rbVoidHbConn = nil end
+    RunService:UnbindFromRenderStep("sh_rbvoid")
+    _s.rbVoidTargetCF = nil; _s.rbVoidThread = nil
+end
+
+local function EnableVoidCsync()
+    DisableVoidCsync()
+    _s.rbVoidHbConn = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            local lc = LP.Character; local h = lc and lc:FindFirstChild("HumanoidRootPart")
+            if not h then return end
+            _voidSavedCF = h.CFrame; _voidSavedLV = h.AssemblyLinearVelocity; _voidSavedAV = h.AssemblyAngularVelocity
+            if _s.rbVoidTargetCF then
+                h.CFrame = _s.rbVoidTargetCF; h.AssemblyLinearVelocity = Vector3.zero; h.AssemblyAngularVelocity = Vector3.zero
+            else
+                h.CFrame = CFrame.new(_voidBR(), _voidBR(), _voidBR()) * CFrame.Angles(math.pi, math.pi, math.pi)
+                h.AssemblyLinearVelocity = Vector3.new(_voidBR(), _voidBR(), _voidBR())
+                h.AssemblyAngularVelocity = Vector3.new(_voidBR(), _voidBR(), _voidBR())
+            end
+        end)
+    end)
+    RunService:BindToRenderStep("sh_rbvoid", Enum.RenderPriority.First.Value, function()
+        if not _voidSavedCF then return end
+        pcall(function()
+            local lc = LP.Character; local h = lc and lc:FindFirstChild("HumanoidRootPart")
+            if not h then return end
+            h.CFrame = _voidSavedCF; h.AssemblyLinearVelocity = _voidSavedLV; h.AssemblyAngularVelocity = _voidSavedAV
+        end)
+    end)
+end
+
+local function RB_StartVoidLoop()
+    if _s.rbVoidThread then return end
+    EnableVoidCsync()
+    _s.rbVoidThread = task.spawn(function()
+        while _s.rbActive and Toggles.RageBot.Value and Toggles.VoidMode.Value do
+            if not _s.rbTarget or PlayerIsDead(_s.rbTarget) then
+                _s.rbVoidTargetCF = nil; task.wait(0.05); continue
+            end
+            
+            _s.rbVoidTargetCF = nil
+            task.wait(Options.VoidHideTime.Value)
+            
+            local tgt = _s.rbTarget
+            if tgt and not PlayerIsDead(tgt) then
+                local tc = tgt.Character; local thead = tc and (tc:FindFirstChild("Head") or tc:FindFirstChild("HumanoidRootPart"))
+                if thead then
+                    _s.rbVoidTargetCF = CFrame.new(thead.Position)
+                    task.wait(Options.VoidShootTime.Value)
+                    RB_DoFire(thead)
+                    _s.rbVoidTargetCF = nil
+                end
+            end
+        end
+        _s.rbVoidThread = nil; DisableVoidCsync()
+    end)
+end
+
+local function StartRageBot()
+    if _s.rbConn then _s.rbConn:Disconnect(); _s.rbConn = nil end
+    DisableVoidCsync()
+    _s.rbActive = true; _s.rbTarget = nil; _s.rbLastFakePos = nil; _s.orbitAngle = math.random() * (math.pi * 2)
+    
+    if Toggles.Noclip.Value then EnableNoclip() end
+    if Toggles.Csync.Value or Toggles.KnifeFarm.Value then StartCsync() end
+
+    if Toggles.VoidMode.Value then
+        RB_StartVoidLoop()
+        return 
+    end
+
+    _s.rbConn = RunService.Stepped:Connect(function(dt)
+        if not _s.rbActive or not Toggles.RageBot.Value or not LP.Character then 
+            if _s.rbConn then _s.rbConn:Disconnect(); _s.rbConn = nil end; return 
+        end
+        local lhrp = LP.Character:FindFirstChild("HumanoidRootPart")
+        if not lhrp then return end
+
+        _s.rbTarget = RB_GetBestTarget()
+        local tgt = _s.rbTarget
+        
+        if not tgt then _s.csyncCF = nil; return end
+        local tc = tgt.Character; local tr = tc and tc:FindFirstChild("HumanoidRootPart")
+        local thead = tc and (tc:FindFirstChild("Head") or tr)
+        if not tr or not thead then _s.csyncCF = nil; return end
+
+        if Toggles.KnifeFarm.Value then
+            local dist = Options.FarmDist.Value
+            local behindPos = tr.Position - tr.CFrame.LookVector * dist + Vector3.new(0, 1.5, 0)
+            local fakeCF = CFrame.new(behindPos, thead.Position)
+            
+            _s.csyncCF = fakeCF
+            _s.csyncLV = (behindPos - (_s.rbLastFakePos or behindPos)) / dt
+            _s.rbLastFakePos = behindPos
+            
+            RB_DoFire(thead)
+            return 
+        end
+
+        if Toggles.Underground.Value then
+            local d = Options.UndergroundDepth.Value
+            local r = 3
+            local ugPos = thead.Position - tr.CFrame.LookVector * r + Vector3.new(0, -d, 0)
+            local ugCF = CFrame.new(ugPos, thead.Position)
+            _s.csyncCF = ugCF; _s.csyncLV = (ugPos - (_s.rbLastFakePos or ugPos)) / dt; _s.rbLastFakePos = ugPos
+            RB_DoFire(thead)
+            return
+        end
+
+        if Toggles.OrbitMode.Value then
+            local dist = Options.OrbitDist.Value
+            local speed = Options.OrbitSpeed.Value
+            _s.orbitAngle += dt * math.max(1, speed * 0.15)
+            local orbitPos = thead.Position + Vector3.new(math.cos(_s.orbitAngle) * dist, 2, math.sin(_s.orbitAngle) * dist)
+            local orbitCF = CFrame.new(orbitPos, thead.Position)
+            _s.csyncCF = orbitCF; _s.csyncLV = (orbitPos - (_s.rbLastFakePos or orbitPos)) / dt; _s.rbLastFakePos = orbitPos
+            RB_DoFire(thead)
+            return
+        end
+
+        local modeVal = Options.MoveMode.Value
+        local dirVector = -tr.CFrame.LookVector 
+        if modeVal == "앞(Front)" then dirVector = tr.CFrame.LookVector
+        elseif modeVal == "뒤(Back)" then dirVector = -tr.CFrame.LookVector
+        elseif modeVal == "왼(Left)" then dirVector = -tr.CFrame.RightVector
+        elseif modeVal == "오른(Right)" then dirVector = tr.CFrame.RightVector
+        elseif modeVal == "위(Up)" then dirVector = Vector3.new(0, 1, 0)
+        end
+
+        local targetPos = thead.Position + dirVector * 3 + Vector3.new(0, 2, 0)
+        local faceCF = CFrame.new(targetPos, thead.Position)
+
+        if Toggles.AntiAim.Value then
+            _s.aaPhase += dt * 20
+            faceCF = faceCF * CFrame.Angles(0, math.rad(math.sin(_s.aaPhase) * 70), 0)
+        end
+
+        _s.csyncCF = faceCF
+        _s.csyncLV = (targetPos - (_s.rbLastFakePos or targetPos)) / dt
+        _s.rbLastFakePos = targetPos
+        
+        RB_DoFire(thead)
+    end)
+end
+
+local function StopRageBot()
+    _s.rbActive = false
+    if _s.rbConn then _s.rbConn:Disconnect(); _s.rbConn = nil end
+    DisableVoidCsync(); StopCsync(); DisableNoclip()
+    _s.rbTarget = nil; _s.csyncCF = nil; _s.rbLastFakePos = nil
+end
+
+-- ==============================
+-- [ UI 이벤트와 로직 연결 ]
+-- ==============================
+
+Toggles.RageBot:OnChanged(function()
+    if Toggles.RageBot.Value then StartRageBot() else StopRageBot() end
+end)
+
+Toggles.Noclip:OnChanged(function()
+    if Toggles.Noclip.Value and _s.rbActive then EnableNoclip() else DisableNoclip() end
+end)
+
+Toggles.Csync:OnChanged(function()
+    if Toggles.Csync.Value and _s.rbActive and not Toggles.VoidMode.Value then StartCsync() elseif not Toggles.Csync.Value and not Toggles.KnifeFarm.Value then StopCsync() end
+end)
+
+Toggles.KnifeFarm:OnChanged(function()
+    if Toggles.KnifeFarm.Value then
+        Toggles.Csync:SetValue(true)
+        Toggles.VoidMode:SetValue(false)
+        Toggles.Underground:SetValue(false)
+        Toggles.OrbitMode:SetValue(false)
+        if _s.rbActive then StartRageBot() end
+    end
+end)
+
+Toggles.VoidMode:OnChanged(function()
+    VoidHideTime:SetVisible(Toggles.VoidMode.Value)
+    VoidShootTime:SetVisible(Toggles.VoidMode.Value)
+    if Toggles.RageBot.Value then StartRageBot() end
+end)
+
+Toggles.Underground:OnChanged(function()
+    UndergroundDepth:SetVisible(Toggles.Underground.Value)
+    if Toggles.Underground.Value then 
+        Toggles.OrbitMode:SetValue(false); Toggles.KnifeFarm:SetValue(false)
+    end
+end)
+
+Toggles.OrbitMode:OnChanged(function()
+    OrbitDist:SetVisible(Toggles.OrbitMode.Value)
+    OrbitSpeed:SetVisible(Toggles.OrbitMode.Value)
+    if Toggles.OrbitMode.Value then 
+        Toggles.Underground:SetValue(false); Toggles.KnifeFarm:SetValue(false)
+    end
+end)
+
+-- ==============================
+-- [ UI Settings 탭 구성 ]
+-- ==============================
+
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+MenuGroup:AddToggle("KeybindMenuOpen", { Default = Library.KeybindFrame.Visible, Text = "Open Keybind Menu", Callback = function(value) Library.KeybindFrame.Visible = value end})
+MenuGroup:AddDivider()
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+MenuGroup:AddButton("Unload", function() Library:Unload() end)
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+
+ThemeManager:SetFolder("DeltaRageBot")
+SaveManager:SetFolder("DeltaRageBot/Game")
+
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+
+SaveManager:LoadAutoloadConfig()
